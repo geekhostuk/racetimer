@@ -1,0 +1,7 @@
+.pio/
+__pycache__/
+*.csv
+# Generated config (sdkconfig.defaults is the source)
+gate/sdkconfig.*
+!gate/sdkconfig.defaults
+gate/managed_components/

@@ -1,0 +1,338 @@
+<!doctype html>
+<!-- racetimer gate UI. GPL-3.0-or-later. Served by the gate controller. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Race Gate</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5d6670; --line: #d9dde3;
+  --top: #d9480f; --bot: #1971c2; --valid: #2b8a3e; --reject: #c92a2a; --single: #868e96;
+  --accent: #364fc7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418; --panel: #1a1e24; --text: #e6e9ed; --muted: #98a1ab; --line: #2c323a;
+    --top: #ff8a50; --bot: #4dabf7; --valid: #51cf66; --reject: #ff6b6b; --single: #adb5bd;
+    --accent: #748ffc;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+  padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 17px; margin: 0; }
+main { padding: 12px 16px; display: grid; gap: 12px; max-width: 1200px; margin: 0 auto; }
+main > *, .channels > * { min-width: 0; }
+.chip { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+.chip.ok { color: var(--valid); border-color: var(--valid); }
+.chip.bad { color: var(--reject); border-color: var(--reject); }
+.legend { display: flex; gap: 12px; font-size: 12px; color: var(--muted); margin-left: auto; }
+.legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; }
+.channels { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.card h2 { font-size: 15px; margin: 0 0 6px; display: flex; gap: 10px; align-items: baseline; }
+.card h2 .stat { font-weight: normal; color: var(--muted); font-size: 12px; }
+canvas { width: 100%; height: 120px; display: block; }
+.verdict { font-weight: 600; }
+.VALID { color: var(--valid); } .OVER, .UNDER { color: var(--reject); }
+.SINGLE_TOP, .SINGLE_BOTTOM { color: var(--single); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.scroll { max-height: 280px; overflow: auto; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); }
+input, select, button { font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+input[type=number] { width: 84px; }
+input.wide { width: min(100%, 320px); }
+button { cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.rec { color: var(--reject); }
+pre { margin: 6px 0 0; max-height: 200px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+.muted { color: var(--muted); }
+details summary { cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Race Gate</h1>
+  <span id="conn" class="chip bad">offline</span>
+  <span id="b0" class="chip">top: —</span>
+  <span id="b1" class="chip">bottom: —</span>
+  <span id="cal" class="chip" hidden>calibrating…</span>
+  <div class="legend"><span><i style="background:var(--top)"></i>top</span>
+    <span><i style="background:var(--bot)"></i>bottom</span></div>
+</header>
+<main>
+  <section class="channels" id="channels"></section>
+
+  <section class="card">
+    <h2>Passes <span class="stat" id="passcount"></span></h2>
+    <div class="row" style="margin-bottom:6px">
+      <button id="clear">Clear laps</button>
+      <button id="rec" class="rec">● Record</button>
+      <span class="muted" id="recinfo"></span>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>Time</th><th>Ch</th><th>Verdict</th><th>Top</th><th>Bottom</th><th>Δ dB</th><th>Lap</th></tr></thead>
+      <tbody id="passes"></tbody>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <details open>
+      <summary>Settings</summary>
+      <p class="muted">Levels are Widscan58 RSSI codes, 0.25 dB steps (dBFS = code / 4 − 63.75). Changes apply at once; Save keeps them over a reboot.</p>
+      <div class="row">
+        <label>RX gain<input type="number" data-key="gain" min="0" max="83"></label>
+        <label>Enter at<input type="number" data-key="enter" min="1" max="254"></label>
+        <label>Exit at<input type="number" data-key="exit" min="1" max="254"></label>
+        <label>Δ limit, dB<input type="number" data-key="delta" data-scale="4" min="0" max="60" step="0.25"></label>
+        <label>Offset, dB<input type="number" data-key="offset" data-scale="4" min="-60" max="60" step="0.25"></label>
+        <label>Pair window, ms<input type="number" data-key="pair" min="1" max="1000"></label>
+        <label>Pair wait, ms<input type="number" data-key="wait" min="50" max="10000"></label>
+        <label>Min lap, s<input type="number" data-key="minlap" data-scale="1000" min="0" max="600" step="0.1"></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label>Channels<input class="wide" data-key="channels" data-text></label>
+        <label>Wi-Fi network (blank: access point only)<input data-key="ssid" data-text></label>
+        <label>Wi-Fi password<input type="password" data-key="pass" data-text></label>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="primary" id="save">Save</button>
+        <button id="defaults">Defaults</button>
+        <label style="grid-auto-flow:column;align-items:center;gap:6px">Calibrate over
+          <input type="number" id="caln" value="5" min="1" max="50"> passes</label>
+        <button id="calgo">Calibrate</button>
+      </div>
+      <p class="muted">Calibrate: fly the next passes through the middle of the gate. Their average top − bottom becomes the offset (saved).</p>
+    </details>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>Receiver console</summary>
+      <div class="row" style="margin-top:8px">
+        <select id="cboard"><option value="all">both</option><option value="0">top</option><option value="1">bottom</option></select>
+        <input class="wide" id="cmd" placeholder="Widscan58 command, e.g. INFO or STATUS?">
+        <button id="send">Send</button>
+      </div>
+      <pre id="console"></pre>
+    </details>
+  </section>
+</main>
+<script>
+"use strict";
+const SPAN_MS = 10000;          // strip chart width
+const BOARD = ["top", "bottom", "gate"];
+let ws, cfg = null, names = [], lastMs = 0;
+const hist = [];                // per channel: [{ms, top, bot}]
+const marks = [];               // per channel: [{ms, v}]
+const stats = [];               // per channel: {laps, last, best, verdict}
+const passRows = [];
+let recording = null;
+
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const fmtLap = (ms) => ms ? (ms / 1000).toFixed(2) + " s" : "—";
+const fmtTime = (ms) => (ms / 1000).toFixed(2);
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host || "192.168.4.1"}/ws`);
+  ws.onopen = () => { $("conn").textContent = "online"; $("conn").className = "chip ok"; };
+  ws.onclose = () => { $("conn").textContent = "offline"; $("conn").className = "chip bad"; setTimeout(connect, 1000); };
+  ws.onmessage = (ev) => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (recording) record(m);
+    ({ lv: onLevels, pass: onPass, seat: onSeat, line: onLine, st: onStatus, cfg: onConfig }[m.t] || (() => {}))(m);
+  };
+}
+const send = (text) => ws && ws.readyState === 1 && ws.send(text);
+
+function buildChannels() {
+  const box = $("channels");
+  box.innerHTML = "";
+  names.forEach((n, i) => {
+    hist[i] = hist[i] || []; marks[i] = marks[i] || [];
+    stats[i] = stats[i] || { laps: 0, last: 0, best: 0, verdict: "" };
+    const card = document.createElement("div");
+    card.className = "card";
+    card.innerHTML = `<h2>${n} <span class="verdict" id="v${i}"></span>
+      <span class="stat" id="s${i}"></span></h2><canvas id="c${i}"></canvas>`;
+    box.appendChild(card);
+    updateStat(i);
+  });
+}
+
+function onConfig(m) {
+  const changed = !cfg || JSON.stringify(m.names) !== JSON.stringify(names);
+  cfg = m; names = m.names;
+  if (changed) buildChannels();
+  document.querySelectorAll("[data-key]").forEach((el) => {
+    if (document.activeElement === el || el.dataset.key === "pass") return;
+    const v = m[el.dataset.key];
+    if (v === undefined) return;
+    el.value = el.dataset.scale ? +(v / +el.dataset.scale).toFixed(3) : v;
+  });
+}
+
+function onLevels(m) {
+  lastMs = m.ms;
+  const [top, bot] = m.l;
+  names.forEach((_, i) => {
+    const h = hist[i];
+    h.push({ ms: m.ms, top: top[i] || 0, bot: bot[i] || 0 });
+    while (h.length && h[0].ms < m.ms - SPAN_MS) h.shift();
+    while (marks[i].length && marks[i][0].ms < m.ms - SPAN_MS) marks[i].shift();
+  });
+}
+
+function onPass(m) {
+  const i = m.ch, s = stats[i];
+  if (!s) return;
+  marks[i].push({ ms: m.ms, v: m.v });
+  s.verdict = m.v + (m.cal ? " (cal)" : "");
+  if (m.n) {
+    s.laps++;
+    if (m.lap) { s.last = m.lap; if (!s.best || m.lap < s.best) s.best = m.lap; }
+  }
+  updateStat(i);
+  const tr = document.createElement("tr");
+  const d = m.v.startsWith("SINGLE") ? "—" : (m.d / 4).toFixed(2);
+  tr.innerHTML = `<td>${fmtTime(m.ms)}</td><td>${names[i]}</td>
+    <td class="verdict ${m.v}">${m.v}${m.n ? "" : m.v === "VALID" ? " (too soon)" : ""}${m.cal ? " · cal" : ""}</td>
+    <td>${m.top || "—"}</td><td>${m.bot || "—"}</td><td>${d}</td><td>${m.n ? fmtLap(m.lap) : ""}</td>`;
+  const body = $("passes");
+  body.insertBefore(tr, body.firstChild);
+  while (body.rows.length > 200) body.deleteRow(-1);
+  passRows.push(m);
+  $("passcount").textContent = `${passRows.length} this session`;
+}
+
+function onSeat(m) { /* single-board passes: kept in recordings only */ }
+
+function updateStat(i) {
+  const s = stats[i];
+  const v = $("v" + i);
+  if (!v) return;
+  v.textContent = s.verdict;
+  v.className = "verdict " + s.verdict.split(" ")[0];
+  $("s" + i).textContent = `laps ${s.laps} · last ${fmtLap(s.last)} · best ${fmtLap(s.best)}`;
+}
+
+function onLine(m) {
+  const pre = $("console");
+  pre.textContent += `[${BOARD[m.b] || m.b}] ${m.s}\n`;
+  if (pre.textContent.length > 20000) pre.textContent = pre.textContent.slice(-15000);
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function onStatus(m) {
+  m.b.forEach((b, i) => {
+    const el = $("b" + i);
+    el.className = "chip " + (b.ok ? "ok" : "bad");
+    el.textContent = `${BOARD[i]}: ${b.ok ? b.fps + " hops/s" : "no data"}` +
+      (b.crc ? ` · crc ${b.crc}` : "") + (b.drops ? ` · drops ${b.drops}` : "") + (b.sat ? ` · clipped ${b.sat}` : "");
+    el.title = `setups ${b.setups}, bad frames ${b.bad}, link fill ${b.fill}‰, running ${b.run}`;
+  });
+  $("cal").hidden = !m.cal;
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const colTop = css("--top"), colBot = css("--bot"), colLine = css("--line"), colMuted = css("--muted");
+  const verdictCol = { VALID: css("--valid"), OVER: css("--reject"), UNDER: css("--reject") };
+  names.forEach((_, i) => {
+    const c = $("c" + i);
+    if (!c) return;
+    const w = c.clientWidth, h = c.clientHeight;
+    if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+    const g = c.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    const data = hist[i];
+    let lo = 254, hi = cfg ? cfg.enter + 20 : 150;
+    for (const p of data) { if (p.top) lo = Math.min(lo, p.top); if (p.bot) lo = Math.min(lo, p.bot); hi = Math.max(hi, p.top, p.bot); }
+    if (cfg) lo = Math.min(lo, cfg.exit - 10);
+    lo = Math.max(0, lo - 4); hi = Math.min(255, hi + 4);
+    const x = (ms) => w - (lastMs - ms) / SPAN_MS * w;
+    const y = (v) => h - (v - lo) / (hi - lo) * h;
+    g.lineWidth = 1;
+    if (cfg) for (const [v, dash] of [[cfg.enter, [5, 3]], [cfg.exit, [2, 3]]]) {
+      g.strokeStyle = colMuted; g.setLineDash(dash);
+      g.beginPath(); g.moveTo(0, y(v)); g.lineTo(w, y(v)); g.stroke();
+    }
+    g.setLineDash([]);
+    for (const mk of marks[i]) {
+      g.strokeStyle = verdictCol[mk.v] || colMuted; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(x(mk.ms), 0); g.lineTo(x(mk.ms), h); g.stroke();
+    }
+    g.lineWidth = 1.5;
+    for (const [key, col] of [["bot", colBot], ["top", colTop]]) {
+      g.strokeStyle = col; g.beginPath();
+      let started = false;
+      for (const p of data) {
+        if (!p[key]) { started = false; continue; }
+        started ? g.lineTo(x(p.ms), y(p[key])) : g.moveTo(x(p.ms), y(p[key]));
+        started = true;
+      }
+      g.stroke();
+    }
+    g.strokeStyle = colLine; g.strokeRect(0.5, 0.5, w - 1, h - 1);
+  });
+  requestAnimationFrame(draw);
+}
+
+// Recording: one CSV row per level batch and per event, gate clock in ms.
+function record(m) {
+  if (m.t === "lv") m.l[0].forEach((t, i) => recording.push(`lv,${m.ms},${names[i]},${t},${m.l[1][i]}`));
+  else if (m.t === "pass") recording.push(`pass,${m.ms},${names[m.ch]},${m.v},${m.top},${m.bot},${(m.d / 4).toFixed(2)},${m.n},${m.lap},${m.cal}`);
+  else if (m.t === "seat") recording.push(`seat,${m.ms},${names[m.ch]},${BOARD[m.b]},${m.pk}`);
+  $("recinfo").textContent = `${recording.length} rows`;
+}
+$("rec").onclick = () => {
+  if (!recording) {
+    recording = [];
+    if (cfg) recording.push(`# racetimer gate recording; settings ${JSON.stringify(cfg).replaceAll(",", ";")}`);
+    $("rec").textContent = "■ Stop and save";
+    return;
+  }
+  const blob = new Blob([recording.join("\n") + "\n"], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `gate-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+  a.click();
+  recording = null;
+  $("rec").textContent = "● Record"; $("recinfo").textContent = "";
+};
+
+document.querySelectorAll("[data-key]").forEach((el) => {
+  el.addEventListener("change", () => {
+    let v = el.value;
+    if (!el.dataset.text) v = Math.round(+v * (el.dataset.scale ? +el.dataset.scale : 1));
+    send(`set ${el.dataset.key} ${v}`);
+  });
+});
+$("save").onclick = () => send("save");
+$("defaults").onclick = () => send("defaults");
+$("calgo").onclick = () => send(`cal ${$("caln").value}`);
+$("clear").onclick = () => {
+  send("clear");
+  stats.forEach((s) => Object.assign(s, { laps: 0, last: 0, best: 0, verdict: "" }));
+  names.forEach((_, i) => updateStat(i));
+  $("passes").innerHTML = ""; passRows.length = 0; $("passcount").textContent = "";
+};
+const sendCmd = () => { const c = $("cmd").value.trim(); if (c) { send(`c5 ${$("cboard").value} ${c}`); $("cmd").value = ""; } };
+$("send").onclick = sendCmd;
+$("cmd").addEventListener("keydown", (e) => { if (e.key === "Enter") sendCmd(); });
+
+connect();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

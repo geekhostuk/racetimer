@@ -1,0 +1,4 @@
+[submodule "third_party/widscan58"]
+	path = third_party/widscan58
+	url = https://github.com/geekhostuk/widscan58.git
+	branch = uart-link
