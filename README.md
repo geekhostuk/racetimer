@@ -57,6 +57,9 @@ cd ../../../gate
 pio run -e esp32dev -t upload
 ```
 
+For the whole build on one page (plan, parts, wiring diagrams, where
+everything goes on the gate) see [docs/build-guide.md](docs/build-guide.md).
+
 Get the parts in [docs/parts.md](docs/parts.md), wire them as in
 [docs/hardware.md](docs/hardware.md) (power the receivers from the 5 V
 supply, not from the WROOM, and fit the capacitors), power up, join the
