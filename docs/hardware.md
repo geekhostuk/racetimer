@@ -1,32 +1,61 @@
 # Hardware
 
 Per gate: two Seeed XIAO ESP32-C5 receivers, one ESP32-WROOM dev board, a
-5 V supply, and antennas for the receivers.
+5 V supply, and antennas for the receivers. Full parts list:
+[parts.md](parts.md).
 
 ## Wiring
 
-| From | To | Note |
-|---|---|---|
-| Top C5 D6 (GPIO11, TX) | WROOM GPIO16 (UART2 RX) | |
-| Top C5 D7 (GPIO12, RX) | WROOM GPIO17 (UART2 TX) | |
-| Bottom C5 D6 (GPIO11, TX) | WROOM GPIO26 (UART1 RX) | |
-| Bottom C5 D7 (GPIO12, RX) | WROOM GPIO27 (UART1 TX) | |
-| All GNDs | common ground | needed |
-| 5 V | each board's 5 V / VIN | or power the C5s over USB |
+Each receiver connects to the controller through one 4-core cable (up to
+2 m, 28 AWG or thicker):
 
-- **Check the XIAO pin numbers on your board** before wiring: D6 = GPIO11
-  and D7 = GPIO12 are from the XIAO ESP32-C5 pinout and not yet checked on
-  hardware. They are set in `third_party/widscan58/firmware/platformio.ini`
-  (env `esp32c5_uart`, `LINK_UART_TX` / `LINK_UART_RX`). The WROOM pins are in
-  `gate/src/main.c`.
-- The link runs at 2 Mbaud. Keep the wires short, under about 1 m. A gate's
-  bottom receiver may be ~2 m away: use twisted pair with ground, or drop to
-  1 Mbaud in both places if `crc` errors show in the UI's status chips (with
-  R1/R3/R6/R8 the stream is ~90 KB/s, so 1 Mbaud is near its limit).
+| Core | C5 end | Controller end |
+|---|---|---|
+| 1 | D6 (GPIO11, TX) | WROOM RX: RX2/GPIO16 (top), D26 (bottom) |
+| 2 | D7 (GPIO12, RX) | WROOM TX: TX2/GPIO17 (top), D27 (bottom) |
+| 3 | VBUS (the XIAO's 5 V pin) | +5 V from the supply, **not** the WROOM's VIN |
+| 4 | GND | supply GND and WROOM GND |
+
+Plus, at each C5: a **220–470 µF capacitor (10 V or higher) from VBUS to GND**,
+soldered right at the XIAO, stripe (−) to GND.
+
+Power, in short:
+
+- The 5 V supply (power bank or charger) feeds each C5's VBUS through its
+  cable, and the WROOM's VIN (or power the WROOM from its own USB).
+- A 470 µF capacitor sits across VBUS and GND at each C5.
+- Every GND is joined: supply, WROOM, both C5s. The UART needs it too.
+
+- Pins: D6 = GPIO11 (TX) and D7 = GPIO12 (RX) match Seeed's XIAO ESP32-C5
+  pin map and were confirmed on hardware (a C5 streamed ~1900 updates/s
+  over this link). They are set in
+  `third_party/widscan58/firmware/platformio.ini` (env `esp32c5_uart`); the
+  WROOM pins are in `gate/src/main.c`.
+- Labels: the XIAO's 5 V pin can be printed **VBUS**. On 30-pin WROOM
+  boards, VIN is the pin at the USB end next to GND, and can look like
+  "VN". The real VN (GPIO39) is at the other end, next to VP and EN; it is
+  an input and must never get 5 V.
+- The link runs at 2 Mbaud; with GND in the same cable, 2 m is fine. If
+  the UI's status chips show `crc` errors climbing, check the joints first.
 - Both chips are 3.3 V logic, so no level shifting is needed.
 - The C5's USB port still works for flashing (`pio run -e esp32c5_uart -t
   upload`), but in this build the receiver's commands and data go over the
-  UART only, so Widscan58's web UI can't talk to it over USB.
+  UART only, so Widscan58's web UI can't talk to it over USB. Disconnect
+  VBUS from the supply before plugging a C5 into a computer (keep GND).
+
+## Power
+
+Power each C5 straight from the 5 V supply, with the capacitor at the C5.
+
+**Don't feed the C5s from the WROOM board's VIN pin.** On a 30-pin
+DevKit, VIN is the USB 5 V after a diode (~4.5 V). Fed from it through
+jumper wires, a C5 reset every ~200 ms with `RTC_PWR_GLITCH` (its supply dipped
+when the radio started), while the same C5 on its own USB ran fine.
+
+To check a receiver's power, type `baud 0 115200` in the web UI's receiver
+console (`baud 1 …` for the bottom one), reset the C5, and read its boot ROM
+lines: one boot, then silence, is good. `rst:0x19 (RTC_PWR_GLITCH)`
+repeating means it is still browning out. `baud 0 0` switches back.
 
 ## Antennas
 

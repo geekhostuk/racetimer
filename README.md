@@ -57,7 +57,9 @@ cd ../../../gate
 pio run -e esp32dev -t upload
 ```
 
-Wire them as in [docs/hardware.md](docs/hardware.md), power up, join the
+Get the parts in [docs/parts.md](docs/parts.md), wire them as in
+[docs/hardware.md](docs/hardware.md) (power the receivers from the 5 V
+supply, not from the WROOM, and fit the capacitors), power up, join the
 Wi-Fi network `racegate-XXXX` (password `racegate`) and open
 http://192.168.4.1/.
 
