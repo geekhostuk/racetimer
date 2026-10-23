@@ -29,8 +29,8 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(e);
     settings_init();
+    c5_link_init(gate_levels, gate_line, gate_telemetry); /* before gate_init, which configures the link */
     gate_init();
-    c5_link_init(gate_levels, gate_line, gate_telemetry);
     c5_link_start(FUSION_TOP, TOP_UART, TOP_TX, TOP_RX, C5_BAUD);
     c5_link_start(FUSION_BOTTOM, BOTTOM_UART, BOTTOM_TX, BOTTOM_RX, C5_BAUD);
     web_start();
