@@ -19,6 +19,7 @@
 typedef struct {
     int uart;
     bool started;
+    int baud, link_baud; /* baud != link_baud: a diagnostic speed, no setups */
     volatile bool setup_now;
     int64_t last_setup_us;
     /* Parser */
@@ -56,6 +57,13 @@ void c5_link_send(unsigned board, const char *line) {
     if (board >= C5_BOARDS || !boards[board].started) return;
     uart_write_bytes(boards[board].uart, line, strlen(line));
     uart_write_bytes(boards[board].uart, "\n", 1);
+}
+
+void c5_link_set_baud(unsigned board, int baud) {
+    if (board >= C5_BOARDS || !boards[board].started) return;
+    if (baud <= 0) baud = boards[board].link_baud;
+    uart_set_baudrate(boards[board].uart, baud);
+    boards[board].baud = baud;
 }
 
 void c5_link_setup(unsigned board) {
@@ -170,6 +178,7 @@ static void link_task(void *arg) {
         int64_t now = esp_timer_get_time();
         if (n > 0) parse(board, buf, n, now);
         bool silent = now - b->stats.last_levels_us > SILENT_US;
+        if (b->baud != b->link_baud) continue; /* listening at a diagnostic speed */
         if (b->setup_now || (silent && now - b->last_setup_us > SETUP_EVERY_US)) {
             b->setup_now = false;
             send_setup(board);
@@ -191,6 +200,7 @@ void c5_link_start(unsigned board, int uart, int tx_pin, int rx_pin, int baud) {
     ESP_ERROR_CHECK(uart_param_config(uart, &cfg));
     ESP_ERROR_CHECK(uart_set_pin(uart, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     b->uart = uart;
+    b->baud = b->link_baud = baud;
     b->started = true;
     /* The board may still be booting: wait for its first silence check. */
     b->last_setup_us = esp_timer_get_time() - SETUP_EVERY_US + 500000;

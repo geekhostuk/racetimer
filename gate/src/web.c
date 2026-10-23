@@ -1,4 +1,5 @@
 /* GPL-3.0-or-later. */
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,44 +18,57 @@
 #define LEVELS_EVERY_MS 33
 #define STATUS_EVERY_MS 1000
 #define MAX_CLIENTS 4
+#define MAX_PENDING 24 /* queued sends; more are dropped (a slow client) */
 
 extern const char index_html_start[] asm("_binary_index_html_start");
 extern const char index_html_end[] asm("_binary_index_html_end");
 
 static httpd_handle_t server;
+static atomic_int pending; /* sends queued on the server task */
 
 /* Sends run on the server's task (httpd_queue_work), so they never race a
- * client closing. */
+ * client closing. A send blocks the server task until the client takes it
+ * (send_wait_timeout), so a client that stops reading (a phone gone to sleep,
+ * out of range) is closed on its first failed send, and while sends back up
+ * new ones are dropped rather than queued. */
 typedef struct {
     size_t len;
     int fd; /* -1: every WebSocket client */
     char text[];
 } send_job_t;
 
+static void send_one(int fd, httpd_ws_frame_t *frame) {
+    if (httpd_ws_send_frame_async(server, fd, frame) != ESP_OK) httpd_sess_trigger_close(server, fd);
+}
+
 static void send_work(void *arg) {
     send_job_t *job = arg;
     httpd_ws_frame_t frame = {.type = HTTPD_WS_TYPE_TEXT, .payload = (uint8_t *)job->text, .len = job->len};
     if (job->fd >= 0) {
-        httpd_ws_send_frame_async(server, job->fd, &frame);
+        send_one(job->fd, &frame);
     } else {
         size_t n = MAX_CLIENTS + 4;
         int fds[MAX_CLIENTS + 4];
         if (httpd_get_client_list(server, &n, fds) == ESP_OK)
             for (size_t i = 0; i < n; i++)
-                if (httpd_ws_get_fd_info(server, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET)
-                    httpd_ws_send_frame_async(server, fds[i], &frame);
+                if (httpd_ws_get_fd_info(server, fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) send_one(fds[i], &frame);
     }
     free(job);
+    pending--;
 }
 
 static void send_text(int fd, const char *text, size_t len) {
-    if (!server || !len) return;
+    if (!server || !len || pending >= MAX_PENDING) return;
     send_job_t *job = malloc(sizeof(*job) + len);
     if (!job) return;
     job->len = len;
     job->fd = fd;
     memcpy(job->text, text, len);
-    if (httpd_queue_work(server, send_work, job) != ESP_OK) free(job);
+    pending++;
+    if (httpd_queue_work(server, send_work, job) != ESP_OK) {
+        free(job);
+        pending--;
+    }
 }
 
 static void send_config(int fd) {
@@ -106,6 +120,8 @@ static void command(int fd, char *line) {
         apply(&d);
     } else if (sscanf(line, "cal %ld", &v) == 1 && v >= 1 && v <= 50) {
         gate_calibrate((unsigned)v);
+    } else if (sscanf(line, "baud %ld %n", &v, &pos) == 1 && pos && v >= 0 && v < C5_BOARDS) {
+        c5_link_set_baud((unsigned)v, atoi(line + pos)); /* 0: back to the link's own */
     } else if (!strcmp(line, "clear")) {
         gate_clear();
     } else if (!strncmp(line, "c5 ", 3)) {
@@ -200,6 +216,7 @@ void web_start(void) {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.max_open_sockets = MAX_CLIENTS + 2;
     cfg.lru_purge_enable = true;
+    cfg.send_wait_timeout = 1; /* s; a client that stops reading is closed (send_one) */
     ESP_ERROR_CHECK(httpd_start(&server, &cfg));
     httpd_uri_t index = {.uri = "/", .method = HTTP_GET, .handler = index_handler};
     httpd_uri_t ws = {.uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .is_websocket = true};

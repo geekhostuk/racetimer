@@ -32,6 +32,9 @@ void c5_link_start(unsigned board, int uart, int tx_pin, int rx_pin, int baud);
 /* What c5_link_setup sends: the channel plan (CHANNELS arguments, e.g.
  * "R1=5658 R3=5732") and the manual RX gain. Takes effect on the next setup. */
 void c5_link_configure(const char *channels, uint8_t gain);
+/* Listen at another baud rate (0: back to the link's own), e.g. 115200 to
+ * read the board's boot ROM messages after a reset. No setups meanwhile. */
+void c5_link_set_baud(unsigned board, int baud);
 /* Send the setup now (from the link's own task, soon). */
 void c5_link_setup(unsigned board);
 /* One command line, without the newline. */

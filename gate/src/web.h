@@ -11,7 +11,9 @@
  *   cal <n>             calibrate the offset from the next n paired passes
  *   clear               forget laps
  *   c5 <0|1|all> <cmd>  a command line to the receivers, replies come back
- *                       as "line" events */
+ *                       as "line" events
+ *   baud <0|1> <rate>   listen to a receiver at another baud rate (0: the
+ *                       link's own), e.g. 115200 for its boot ROM messages */
 #pragma once
 
 void web_start(void);
