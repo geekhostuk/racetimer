@@ -1,11 +1,14 @@
 /* GPL-3.0-or-later. */
+#include <inttypes.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_event.h"
 #include "esp_http_server.h"
+#include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -19,12 +22,28 @@
 #define STATUS_EVERY_MS 1000
 #define MAX_CLIENTS 4
 #define MAX_PENDING 24 /* queued sends; more are dropped (a slow client) */
+/* Station retries: 2 s, doubling to 60 s. Each try scans, which takes the
+ * access point off its channel for a moment, so a network that isn't there
+ * shouldn't be tried flat out. */
+#define RETRY_FIRST_MS 2000
+#define RETRY_MAX_MS 60000
+
+static const char *TAG = "web";
 
 extern const char index_html_start[] asm("_binary_index_html_start");
 extern const char index_html_end[] asm("_binary_index_html_end");
 
 static httpd_handle_t server;
 static atomic_int pending; /* sends queued on the server task */
+
+/* The station (home network) link, for the page. */
+typedef enum { NET_OFF, NET_CONNECTING, NET_UP, NET_RETRY } net_state_t;
+static const char *const NET_STATE[] = {"off", "connecting", "up", "retry"};
+static atomic_int net_state;
+static atomic_uint net_ip;     /* esp_ip4_addr_t.addr while NET_UP */
+static atomic_int net_reason;  /* wifi_err_reason_t of the last failure */
+static esp_timer_handle_t retry_timer;
+static uint32_t retry_ms = RETRY_FIRST_MS;
 
 /* Sends run on the server's task (httpd_queue_work), so they never race a
  * client closing. A send blocks the server task until the client takes it
@@ -76,6 +95,72 @@ static void send_config(int fd) {
     send_text(fd, buf, gate_json_config(buf, sizeof(buf)));
 }
 
+/* Join (or leave) the home network in the settings. Runs at boot and when the
+ * network or password changes, so a new one is tried straight away. */
+static void sta_apply(const settings_t *s) {
+    esp_timer_stop(retry_timer);
+    retry_ms = RETRY_FIRST_MS;
+    net_ip = 0;
+    net_reason = 0;
+    if (!s->sta_ssid[0]) {
+        net_state = NET_OFF;
+        esp_wifi_set_mode(WIFI_MODE_AP);
+        return;
+    }
+    wifi_config_t st = {0};
+    snprintf((char *)st.sta.ssid, sizeof(st.sta.ssid), "%s", s->sta_ssid);
+    snprintf((char *)st.sta.password, sizeof(st.sta.password), "%s", s->sta_pass);
+    net_state = NET_CONNECTING;
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
+    esp_wifi_disconnect(); /* from the old network: WIFI_REASON_ASSOC_LEAVE, not retried */
+    esp_wifi_set_config(WIFI_IF_STA, &st);
+    esp_wifi_connect();
+}
+
+static void retry(void *arg) {
+    (void)arg;
+    net_state = NET_CONNECTING;
+    esp_wifi_connect();
+}
+
+static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    (void)arg;
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *d = data;
+        net_ip = 0;
+        if (d->reason == WIFI_REASON_ASSOC_LEAVE) return; /* we left: sta_apply */
+        net_reason = d->reason;
+        net_state = NET_RETRY;
+        ESP_LOGW(TAG, "home network: not connected (reason %u), retry in %" PRIu32 " s", d->reason, retry_ms / 1000);
+        esp_timer_start_once(retry_timer, (uint64_t)retry_ms * 1000);
+        retry_ms = retry_ms * 2 > RETRY_MAX_MS ? RETRY_MAX_MS : retry_ms * 2;
+    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *g = data;
+        net_ip = g->ip_info.ip.addr;
+        net_reason = 0;
+        net_state = NET_UP;
+        retry_ms = RETRY_FIRST_MS;
+        ESP_LOGI(TAG, "home network: connected, http://" IPSTR "/", IP2STR(&g->ip_info.ip));
+    }
+}
+
+static void send_net(int fd) {
+    settings_t s;
+    settings_get(&s);
+    char ssid[2 * sizeof(s.sta_ssid)];
+    size_t k = 0;
+    for (const char *p = s.sta_ssid; *p && k + 2 < sizeof(ssid); p++) {
+        if (*p == '"' || *p == '\\') ssid[k++] = '\\';
+        ssid[k++] = *p;
+    }
+    ssid[k] = 0;
+    esp_ip4_addr_t ip = {.addr = net_ip};
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf), "{\"t\":\"net\",\"st\":\"%s\",\"ssid\":\"%s\",\"ip\":\"" IPSTR "\",\"why\":%d}",
+                     NET_STATE[net_state], ssid, IP2STR(&ip), net_reason);
+    if (n > 0 && (size_t)n < sizeof(buf)) send_text(fd, buf, (size_t)n);
+}
+
 static void apply(const settings_t *s) {
     settings_t old;
     settings_get(&old);
@@ -109,7 +194,10 @@ static void command(int fd, char *line) {
             return;
         }
         if (s.exit_at > s.enter_at) s.exit_at = s.enter_at;
+        settings_t old;
+        settings_get(&old);
         apply(&s);
+        if (strcmp(old.sta_ssid, s.sta_ssid) || strcmp(old.sta_pass, s.sta_pass)) sta_apply(&s);
     } else if (!strcmp(line, "save")) {
         gate_line(C5_BOARDS, settings_save() ? "OK gate: saved" : "ERR gate: save failed");
     } else if (!strcmp(line, "defaults")) {
@@ -140,6 +228,7 @@ static void command(int fd, char *line) {
 static esp_err_t ws_handler(httpd_req_t *req) {
     if (req->method == HTTP_GET) { /* the handshake */
         send_config(httpd_req_to_sockfd(req));
+        send_net(httpd_req_to_sockfd(req));
         return ESP_OK;
     }
     httpd_ws_frame_t frame = {0};
@@ -177,6 +266,7 @@ static void ui_task(void *arg) {
             status_ms = now;
             send_text(-1, buf, gate_json_status(buf, sizeof(buf)));
             send_config(-1); /* a calibration changes the offset */
+            send_net(-1);
         }
     }
 }
@@ -185,30 +275,29 @@ static void wifi_start(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_ap();
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, wifi_event, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL));
+    esp_timer_create_args_t t = {.callback = retry, .name = "sta_retry"};
+    ESP_ERROR_CHECK(esp_timer_create(&t, &retry_timer));
 
-    settings_t s;
-    settings_get(&s);
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     wifi_config_t ap = {.ap = {.channel = 1, .max_connection = MAX_CLIENTS, .authmode = WIFI_AUTH_WPA2_PSK}};
     int len = snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "racegate-%02X%02X", mac[4], mac[5]);
     ap.ap.ssid_len = (uint8_t)len;
     snprintf((char *)ap.ap.password, sizeof(ap.ap.password), "%s", AP_PASS);
-    bool sta = s.sta_ssid[0] != 0;
-    ESP_ERROR_CHECK(esp_wifi_set_mode(sta ? WIFI_MODE_APSTA : WIFI_MODE_AP));
+    esp_netif_set_hostname(sta_netif, (char *)ap.ap.ssid); /* the name the router lists */
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap));
-    if (sta) {
-        wifi_config_t st = {0};
-        snprintf((char *)st.sta.ssid, sizeof(st.sta.ssid), "%s", s.sta_ssid);
-        snprintf((char *)st.sta.password, sizeof(st.sta.password), "%s", s.sta_pass);
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &st));
-    }
     ESP_ERROR_CHECK(esp_wifi_start());
-    if (sta) esp_wifi_connect();
+
+    settings_t s;
+    settings_get(&s);
+    sta_apply(&s);
 }
 
 void web_start(void) {

@@ -65,6 +65,7 @@ details summary { cursor: pointer; font-weight: 600; }
   <span id="b0" class="chip">top: —</span>
   <span id="b1" class="chip">bottom: —</span>
   <span id="cal" class="chip" hidden>calibrating…</span>
+  <span id="net" class="chip" hidden></span>
   <div class="legend"><span><i style="background:var(--top)"></i>top</span>
     <span><i style="background:var(--bot)"></i>bottom</span></div>
 </header>
@@ -103,8 +104,10 @@ details summary { cursor: pointer; font-weight: 600; }
         <label>Wi-Fi network (blank: access point only)<input data-key="ssid" data-text></label>
         <label>Wi-Fi password<input type="password" data-key="pass" data-text></label>
       </div>
+      <p class="muted" id="netinfo"></p>
       <div class="row" style="margin-top:10px">
         <button class="primary" id="save">Save</button>
+        <span class="muted" id="saved"></span>
         <button id="defaults">Defaults</button>
         <label style="grid-auto-flow:column;align-items:center;gap:6px">Calibrate over
           <input type="number" id="caln" value="5" min="1" max="50"> passes</label>
@@ -149,10 +152,10 @@ function connect() {
   ws.onmessage = (ev) => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (recording) record(m);
-    ({ lv: onLevels, pass: onPass, seat: onSeat, line: onLine, st: onStatus, cfg: onConfig }[m.t] || (() => {}))(m);
+    ({ lv: onLevels, pass: onPass, seat: onSeat, line: onLine, st: onStatus, cfg: onConfig, net: onNet }[m.t] || (() => {}))(m);
   };
 }
-const send = (text) => ws && ws.readyState === 1 && ws.send(text);
+const send = (text) => { if (!ws || ws.readyState !== 1) return false; ws.send(text); return true; };
 
 function buildChannels() {
   const box = $("channels");
@@ -230,6 +233,27 @@ function onLine(m) {
   pre.textContent += `[${BOARD[m.b] || m.b}] ${m.s}\n`;
   if (pre.textContent.length > 20000) pre.textContent = pre.textContent.slice(-15000);
   pre.scrollTop = pre.scrollHeight;
+  if (m.b === 2 && /^(OK|ERR) gate: save/.test(m.s)) $("saved").textContent = m.s.startsWith("OK") ? "Saved ✓" : "Save failed";
+}
+
+// Why the home network didn't connect (wifi_err_reason_t).
+const NET_WHY = { 201: "network not found (the gate only sees 2.4 GHz networks)", 2: "wrong password?",
+  15: "wrong password?", 202: "wrong password?", 204: "wrong password?", 205: "connection failed" };
+
+function onNet(m) {
+  const el = $("net"), info = $("netinfo");
+  el.hidden = m.st === "off";
+  if (m.st === "off") { info.textContent = "Access point only."; return; }
+  const why = m.why ? NET_WHY[m.why] || `reason ${m.why}` : "";
+  if (m.st === "up") {
+    el.className = "chip ok"; el.textContent = `Wi-Fi: ${m.ip}`;
+    const a = document.createElement("a");
+    a.href = a.textContent = `http://${m.ip}/`;
+    info.replaceChildren(`Connected to ${m.ssid}. On the home network the gate is at `, a);
+  } else {
+    el.className = "chip " + (m.st === "retry" ? "bad" : ""); el.textContent = `Wi-Fi: ${m.st === "retry" ? "not connected" : "connecting…"}`;
+    info.textContent = `${m.st === "retry" ? "Not connected" : "Connecting"} to ${m.ssid}` + (why ? `: ${why}. Retrying.` : "…");
+  }
 }
 
 function onStatus(m) {
@@ -314,11 +338,12 @@ $("rec").onclick = () => {
 document.querySelectorAll("[data-key]").forEach((el) => {
   el.addEventListener("change", () => {
     let v = el.value;
-    if (!el.dataset.text) v = Math.round(+v * (el.dataset.scale ? +el.dataset.scale : 1));
+    if (!("text" in el.dataset)) v = Math.round(+v * (el.dataset.scale ? +el.dataset.scale : 1));
     send(`set ${el.dataset.key} ${v}`);
+    $("saved").textContent = "not saved";
   });
 });
-$("save").onclick = () => send("save");
+$("save").onclick = () => { $("saved").textContent = send("save") ? "saving…" : "offline: not saved"; };
 $("defaults").onclick = () => send("defaults");
 $("calgo").onclick = () => send(`cal ${$("caln").value}`);
 $("clear").onclick = () => {
