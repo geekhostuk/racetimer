@@ -4,29 +4,32 @@
 
 A normal lap timer has one receiver per gate and counts a lap at the signal
 peak, so a quad flying close over or under the gate still counts. racetimer
-puts two receivers on each gate, one on the top bar and one on the bottom bar,
-and only counts a pass when both see the quad strongly at the same moment with
-balanced levels:
+puts two receivers on each gate, in opposite corners: one at a top corner and
+one at the bottom corner diagonally across from it. It only counts a pass when
+both see the quad strongly at the same moment with balanced levels:
 
 | Top vs bottom at the pass | Verdict |
 |---|---|
 | within ±Δ limit (default 6 dB) | **VALID**, through the gate: a lap |
 | top much stronger | **OVER** |
 | bottom much stronger | **UNDER** |
-| only one bar saw it | **SINGLE_TOP / SINGLE_BOTTOM** |
+| only one receiver saw it | **SINGLE_TOP / SINGLE_BOTTOM** |
 
-> **Status:** early and untested on a real gate. Everything builds and the
-> fusion logic has host tests, but no quad has flown through one yet. The
-> field test (PLAN.md, Milestone 4) decides the antennas and thresholds.
+> **Status: a work in development.** The timers are installed on the RaceGOW
+> track's gates, with the receivers in opposite corners, and they detect laps
+> correctly. Antennas, placement and thresholds are still being worked out
+> (PLAN.md, Milestone 4): many passes are still seen by only one receiver,
+> and OVER and UNDER haven't been flown on purpose yet. Expect the firmware
+> and these docs to change.
 
 ## How it works
 
 Per gate:
 
 ```
-  top bar:    XIAO ESP32-C5 (Widscan58, UART build) ──UART 2 Mbaud──┐
-                                                                    ├─► ESP32-WROOM ──Wi-Fi──► phone / laptop
-  bottom bar: XIAO ESP32-C5 (Widscan58, UART build) ──UART 2 Mbaud──┘    gate controller        web UI
+  top corner:    XIAO ESP32-C5 (Widscan58, UART build) ──UART 2 Mbaud──┐
+                                                                       ├─► ESP32-WROOM ──Wi-Fi──► phone / laptop
+  bottom corner: XIAO ESP32-C5 (Widscan58, UART build) ──UART 2 Mbaud──┘    gate controller        web UI
 ```
 
 - **Receivers:** [Widscan58](https://github.com/CapnBry/widscan58) turns the
@@ -56,6 +59,9 @@ pio run -e esp32c5_uart -t upload
 cd ../../../gate
 pio run -e esp32dev -t upload
 ```
+
+A printable case for the XIAO ESP32-C5 and its antenna is in
+`cad/seeed-esp32-antenna-case.3mf`.
 
 For the whole build on one page (plan, parts, wiring diagrams, where
 everything goes on the gate) see [docs/build-guide.md](docs/build-guide.md).

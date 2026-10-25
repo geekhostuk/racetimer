@@ -164,6 +164,12 @@ data goes; only the labelled pins are used.
 
 ## Position on the gate
 
+> The gates on the RaceGOW track run with the receivers in **opposite
+> corners** instead: one at a top corner, the other at the bottom corner
+> diagonally across from it. That's what is detecting laps now. The
+> bar-centred layout below is the original plan; which works best is still
+> being found out.
+
 ### Front view (looking along the flight path)
 
 Sized for a common 1.5 m × 1.5 m (5 ft) gate.
